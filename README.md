@@ -1,4 +1,4 @@
-# TypeSafe × Neo4j Agent Memory — POC
+# TypeSafe × Neo4j Agent Memory 
 
 A LangChain-based agent whose memory graph on **Neo4j Aura**  with the ingestion pipeline using **TypeSafe's Jev** instead of **SpaCy**.
 
@@ -107,19 +107,3 @@ These are constructor arguments of `TypeSafeExtractor` (set them in `build_extra
 **Cost model:** each passage costs one question per candidate entity, plus two per pair of
 entities that share a sentence (both directions). Questions are batched, so a typical
 passage takes 1–3 API calls.
-
-## Known limitations
-
-- **Relations only between entities in the same sentence.** Pronouns aren't resolved.
-  "She hired Tom" doesn't link Maria to Tom. Keep passages short and explicit, or widen `_co_occurring_pairs`.
-- **One relationship per ordered pair.** The memory library stores relations as `(a)-[:RELATED_TO {relation_type}]->(b)` and merges on the pair.
-  A second relation type between the same two entities updates confidence and keeps the first type.
-- **No preference extraction.** `extract_preferences` is accepted and ignored. The agent's `save_preference` tool writes preferences explicitly.
-- **Don't change `EMBEDDING_MODEL` after the first ingest.** The Aura vector index is sized to the model:
-  384 dims for the default `bge-small`. After switching models, run `make fix-vector-indexes`.
-  It drops only the indexes whose size doesn't match, and they're recreated on the next connect.
-  Embeddings already stored at the old size stay on their nodes, so re-ingest or clear the database.
-- **Offline agent.** Without `DEEPSEEK_API_KEY` the agent answers with a scripted fake model and has no tools.
-  Memory injection, message persistence and TypeSafe extraction still run.
-- **Sessions.** Documents go to `INGEST_SESSION_ID` and chat to `CHAT_SESSION_ID`. The `search_memory` tool searches across both.
-  Nothing here deletes data. To start over, clear the Aura database from the console.
