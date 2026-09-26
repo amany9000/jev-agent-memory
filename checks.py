@@ -13,10 +13,15 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import sys
 from urllib.parse import urlparse
 
 import _env
+
+# The memory library's own driver logs "label/property does not exist" notices on a
+# fresh database; they are expected until the first ingest.
+logging.getLogger("neo4j.notifications").setLevel(logging.ERROR)
 
 OK, FAIL, WARN = "\033[32m✔\033[0m", "\033[31m✘\033[0m", "\033[33m!\033[0m"
 
@@ -35,23 +40,34 @@ def fail(message: str, hint: str = "") -> None:
     sys.exit(1)
 
 
+def _driver(uri: str):  # type: ignore[no-untyped-def]
+    from neo4j import AsyncGraphDatabase
+
+    # Notifications off: on a fresh database every query that names :Entity or
+    # :Message logs a "label does not exist" warning, which is expected here.
+    return AsyncGraphDatabase.driver(
+        uri,
+        auth=(_env.NEO4J_USERNAME, _env.NEO4J_PASSWORD),
+        notifications_min_severity="OFF",
+    )
+
+
 # ---------------------------------------------------------------------------
 def check_env() -> None:
     required = ["NEO4J_URI", "NEO4J_PASSWORD", "TYPESAFE_API_KEY"]
-    if _env.USES_OPENAI_EMBEDDINGS:
-        required.append("OPENAI_API_KEY")
     missing = [name for name in required if not getattr(_env, name)]
     for name in required:
         print(f"{FAIL if name in missing else OK} {name}")
-    if not _env.USES_OPENAI_EMBEDDINGS:
-        print(f"{OK if _env.OPENAI_API_KEY else WARN} OPENAI_API_KEY (optional: real chat model for the agent)")
-    print(f"{OK} EMBEDDING_MODEL = {_env.EMBEDDING_MODEL}")
+    print(
+        f"{OK if _env.DEEPSEEK_API_KEY else WARN} DEEPSEEK_API_KEY "
+        "(optional: without it the agent uses a fake model)"
+    )
+    print(f"{OK} EMBEDDING_MODEL = {_env.EMBEDDING_MODEL} (FastEmbed, local)")
     if missing:
         fail("Missing required values in .env", "run `make env`, then fill them in")
 
 
 async def check_neo4j() -> None:
-    from neo4j import AsyncGraphDatabase
     from neo4j.exceptions import AuthError, Neo4jError, ServiceUnavailable
 
     _env.require("NEO4J_URI", "NEO4J_PASSWORD")
@@ -63,7 +79,7 @@ async def check_neo4j() -> None:
     if parsed.hostname and parsed.hostname.endswith("databases.neo4j.io") and parsed.scheme != "neo4j+s":
         print(f"{WARN} Aura needs an encrypted scheme — expected neo4j+s://, got {parsed.scheme}://")
 
-    driver = AsyncGraphDatabase.driver(uri, auth=(_env.NEO4J_USERNAME, _env.NEO4J_PASSWORD))
+    driver = _driver(uri)
     try:
         try:
             await driver.verify_connectivity()
@@ -79,12 +95,13 @@ async def check_neo4j() -> None:
 
         async with driver.session(database=_env.NEO4J_DATABASE) as session:
             try:
-                record = await (
-                    await session.run(
-                        "CALL dbms.components() YIELD name, versions, edition "
-                        "RETURN name, versions[0] AS version, edition"
-                    )
-                ).single()
+                # Aura can return more than one component row; the kernel is enough.
+                result = await session.run(
+                    "CALL dbms.components() YIELD name, versions, edition "
+                    "RETURN name, versions[0] AS version, edition"
+                )
+                record = (await result.fetch(1))[0]
+                await result.consume()
                 print(f"{OK} Server: {record['name']} {record['version']} ({record['edition']})")
 
                 # Write + delete in one transaction: proves the user can write.
@@ -97,7 +114,9 @@ async def check_neo4j() -> None:
 
                 record = await (
                     await session.run(
-                        "MATCH (n) RETURN count(n) AS nodes, "
+                        # Separate COUNT subqueries: always exactly one row, even on an
+                        # empty database (count(n) + COUNT {} would group to zero rows).
+                        "RETURN COUNT { MATCH (n) } AS nodes, "
                         "COUNT { MATCH (:Entity) } AS entities, COUNT { MATCH (:Message) } AS messages"
                     )
                 ).single()
@@ -117,24 +136,69 @@ async def check_neo4j() -> None:
 
 async def check_memory() -> None:
     from neo4j_agent_memory import MemoryClient
+    from neo4j_agent_memory.llm.errors import EmbeddingDimensionMismatchError
 
+    from fastembed_embedder import fastembed_dimensions
     from langchain_agent_memory import build_settings
 
     session_id = "typesafe-poc-healthcheck"
-    print(f"Embedder: {_env.EMBEDDING_MODEL}")
-    # No TypeSafe here: this isolates the memory library + Aura + embedder.
-    async with MemoryClient(build_settings()) as client:
-        print(f"{OK} MemoryClient connected; schema and indexes ensured")
-        await client.short_term.add_message(
-            session_id, "user", "Healthcheck message from the TypeSafe POC.", extract_entities=False
+    dims = fastembed_dimensions(_env.EMBEDDING_MODEL)
+    print(f"Embedder: FastEmbed {_env.EMBEDDING_MODEL} ({dims} dims; first run downloads it)")
+    try:
+        # No TypeSafe here: this isolates the memory library + Aura + embedder.
+        async with MemoryClient(build_settings()) as client:
+            print(f"{OK} MemoryClient connected; schema and {dims}-dim vector indexes ensured")
+            try:
+                await client.short_term.add_message(
+                    session_id, "user", "Healthcheck message from the TypeSafe POC.",
+                    extract_entities=False,
+                )
+            except Exception as error:
+                await client.short_term.clear_session(session_id)
+                fail(f"Storing a message failed ({_env.EMBEDDING_MODEL}): {error}")
+            conversation = await client.short_term.get_conversation(session_id)
+            if not conversation.messages:
+                fail("Stored a message but could not read it back")
+            print(f"{OK} Message round-trip (with embedding) works")
+            await client.short_term.clear_session(session_id)
+            print(f"{OK} Cleaned up session {session_id!r}")
+    except EmbeddingDimensionMismatchError as error:
+        fail(
+            f"Aura's vector indexes were built for a different embedding size: {str(error).splitlines()[0]}",
+            f"run `make fix-vector-indexes` to drop them (they are recreated at {dims} dims), then retry",
         )
-        conversation = await client.short_term.get_conversation(session_id)
-        if not conversation.messages:
-            fail("Stored a message but could not read it back")
-        print(f"{OK} Message round-trip (with embedding) works")
-        await client.short_term.clear_session(session_id)
-        print(f"{OK} Cleaned up session {session_id!r}")
     print(f"\n{OK} Agent memory on Aura is working")
+
+
+async def fix_vector_indexes() -> None:
+    """Drop vector indexes whose dimension differs from the configured embedder.
+
+    Indexes only — nodes and their stored embeddings are left alone. The memory
+    library recreates the indexes at the right size on its next connect.
+    """
+    from fastembed_embedder import fastembed_dimensions
+
+    _env.require("NEO4J_URI", "NEO4J_PASSWORD")
+    dims = fastembed_dimensions(_env.EMBEDDING_MODEL)
+    driver = _driver(_env.NEO4J_URI)
+    try:
+        async with driver.session(database=_env.NEO4J_DATABASE) as session:
+            result = await session.run("SHOW VECTOR INDEXES YIELD name, options RETURN name, options")
+            rows = [record async for record in result]
+            stale = [
+                (row["name"], (row["options"] or {}).get("indexConfig", {}).get("vector.dimensions"))
+                for row in rows
+            ]
+            stale = [(name, size) for name, size in stale if size != dims]
+            if not stale:
+                print(f"{OK} All {len(rows)} vector indexes already match {dims} dims — nothing to do")
+                return
+            for name, size in stale:
+                await (await session.run(f"DROP INDEX `{name}` IF EXISTS")).consume()
+                print(f"{OK} Dropped {name} ({size} dims)")
+    finally:
+        await driver.close()
+    print(f"\n{OK} Done. `make check-memory` recreates them at {dims} dims.")
 
 
 async def check_typesafe() -> None:
@@ -209,10 +273,8 @@ async def check_extractor() -> None:
 
 
 async def show_graph() -> None:
-    from neo4j import AsyncGraphDatabase
-
     _env.require("NEO4J_URI", "NEO4J_PASSWORD")
-    driver = AsyncGraphDatabase.driver(_env.NEO4J_URI, auth=(_env.NEO4J_USERNAME, _env.NEO4J_PASSWORD))
+    driver = _driver(_env.NEO4J_URI)
     try:
         async with driver.session(database=_env.NEO4J_DATABASE) as session:
             print("Entities by type:")
@@ -238,12 +300,31 @@ async def show_graph() -> None:
     print("\nExplore visually in Aura's Query tab: MATCH p=(:Entity)-[:RELATED_TO]->(:Entity) RETURN p")
 
 
+async def check_deepseek() -> None:
+    from langchain_deepseek import ChatDeepSeek
+
+    _env.require("DEEPSEEK_API_KEY")
+    # No max_tokens cap: reasoning models spend output tokens thinking before answering,
+    # so a small cap returns an empty reply.
+    model = ChatDeepSeek(model=_env.DEEPSEEK_MODEL, api_key=_env.DEEPSEEK_API_KEY)
+    try:
+        reply = await model.ainvoke("Reply with the single word: pong")
+    except Exception as error:
+        fail(f"DeepSeek call failed: {error}", "check DEEPSEEK_API_KEY and account balance")
+    if not reply.text.strip():
+        fail(f"{_env.DEEPSEEK_MODEL} returned an empty reply", "try DEEPSEEK_MODEL=deepseek-chat")
+    print(f"{OK} {_env.DEEPSEEK_MODEL} replied: {reply.text.strip()!r}")
+    print(f"\n{OK} DeepSeek is working")
+
+
 COMMANDS = {
     "neo4j": check_neo4j,
     "memory": check_memory,
     "typesafe": check_typesafe,
     "extractor": check_extractor,
     "graph": show_graph,
+    "fix-vector-indexes": fix_vector_indexes,
+    "deepseek": check_deepseek,
 }
 
 if __name__ == "__main__":

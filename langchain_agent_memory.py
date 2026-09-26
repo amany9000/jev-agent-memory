@@ -43,6 +43,7 @@ from pydantic import SecretStr
 from typesafe_sdk import AsyncTypeSafeClient
 
 import _env
+from fastembed_embedder import FastEmbedProvider
 from typesafe_extractor import TypeSafeExtractor, gliner_candidate_extractor
 
 if TYPE_CHECKING:
@@ -63,8 +64,6 @@ def build_settings() -> BoltSettings:
     """Bolt settings for Aura. The library's own extraction is switched off —
     ``TypeSafeExtractor`` replaces it via ``MemoryClient(extractor=...)``."""
     _env.require("NEO4J_URI", "NEO4J_PASSWORD")
-    if _env.USES_OPENAI_EMBEDDINGS:
-        _env.require("OPENAI_API_KEY")
     return BoltSettings(
         neo4j=Neo4jConfig(
             uri=_env.NEO4J_URI,
@@ -73,7 +72,7 @@ def build_settings() -> BoltSettings:
             database=_env.NEO4J_DATABASE,
         ),
         llm=None,
-        embedding=_env.EMBEDDING_MODEL,
+        embedding=FastEmbedProvider(_env.EMBEDDING_MODEL),
         extraction=ExtractionConfig(
             extractor_type=ExtractorType.PIPELINE,
             enable_spacy=False,
@@ -162,15 +161,15 @@ async def ingest(
 # =====================================================================
 def build_model() -> tuple[BaseChatModel, bool]:
     """(model, supports_tools). Falls back to a scripted fake model offline."""
-    if _env.OPENAI_API_KEY:
-        from langchain_openai import ChatOpenAI
+    if _env.DEEPSEEK_API_KEY:
+        from langchain_deepseek import ChatDeepSeek
 
-        print(f"Model: ChatOpenAI({_env.OPENAI_MODEL!r}) — tools enabled")
-        return ChatOpenAI(model=_env.OPENAI_MODEL), True
+        print(f"Model: ChatDeepSeek({_env.DEEPSEEK_MODEL!r}) — tools enabled")
+        return ChatDeepSeek(model=_env.DEEPSEEK_MODEL, api_key=_env.DEEPSEEK_API_KEY), True
 
     from langchain_core.language_models.fake_chat_models import FakeListChatModel
 
-    print("Model: FakeListChatModel (no OPENAI_API_KEY) — memory path only, no tools")
+    print("Model: FakeListChatModel (no DEEPSEEK_API_KEY) — memory path only, no tools")
     return FakeListChatModel(responses=["(offline model) See the memory context above."]), False
 
 

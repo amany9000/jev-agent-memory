@@ -31,15 +31,13 @@ GLINER_MODEL = _get("GLINER_MODEL", "gliner-community/gliner_medium-v2.5")
 GLINER_THRESHOLD = float(_get("GLINER_THRESHOLD", "0.3"))
 GLINER_DEVICE = _get("GLINER_DEVICE", "cpu")
 
-# Embeddings for message/entity vectors. Do not change after the first ingest:
-# the Neo4j vector index is created with this model's dimension.
-EMBEDDING_MODEL = _get("EMBEDDING_MODEL", "openai/text-embedding-3-small")
-USES_OPENAI_EMBEDDINGS = EMBEDDING_MODEL.startswith("openai/")
+# FastEmbed model for message/entity vectors (local, no key). Do not change after
+# the first ingest: the Neo4j vector indexes are sized to this model's dimension.
+EMBEDDING_MODEL = _get("EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
 
-# Needed for OpenAI embeddings (the SDK reads it from the environment), and gives
-# the agent a real chat model when langchain-openai is installed.
-OPENAI_API_KEY = _get("OPENAI_API_KEY")
-OPENAI_MODEL = _get("OPENAI_MODEL", "gpt-5-mini")
+# DeepSeek chat model for the agent. Without a key the agent uses a fake model.
+DEEPSEEK_API_KEY = _get("DEEPSEEK_API_KEY")
+DEEPSEEK_MODEL = _get("DEEPSEEK_MODEL", "deepseek-chat")
 
 INGEST_SESSION_ID = _get("INGEST_SESSION_ID", "typesafe-poc-ingest")
 CHAT_SESSION_ID = _get("CHAT_SESSION_ID", "typesafe-poc-chat")

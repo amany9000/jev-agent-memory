@@ -2,19 +2,17 @@
 RUN := uv run --no-sync python
 Q ?= Who leads Acme Robotics' Berlin office, and what do they use?
 
-.PHONY: help install install-openai env \
-        check check-env check-neo4j check-memory check-typesafe check-extractor \
+.PHONY: help install env \
+        check check-env check-neo4j check-memory check-typesafe check-extractor check-deepseek \
+        fix-vector-indexes \
         ingest ask demo graph clean
 
 help: ## Show this help
-	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z0-9_-]+:.*## / {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z0-9_-]+:.*## / {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 # --- setup -------------------------------------------------------------------
 install: ## Install dependencies into .venv (uv)
 	uv sync
-
-install-openai: ## Install deps + langchain-openai for a real chat model
-	uv sync --extra openai
 
 env: ## Create .env from .env.example (never overwrites)
 	@if [ -f .env ]; then echo ".env already exists — edit it directly"; \
@@ -27,8 +25,14 @@ check-env: ## Required settings are present in .env
 check-neo4j: ## Aura reachable, credentials valid, user can write
 	@$(RUN) checks.py neo4j
 
-check-memory: ## neo4j-agent-memory connects to Aura and round-trips a message
+check-memory: ## neo4j-agent-memory connects to Aura and round-trips a message (FastEmbed)
 	@$(RUN) checks.py memory
+
+check-deepseek: ## DeepSeek API key works (optional: agent chat model)
+	@$(RUN) checks.py deepseek
+
+fix-vector-indexes: ## Drop Aura vector indexes sized for a different embedding model
+	@$(RUN) checks.py fix-vector-indexes
 
 check-typesafe: ## TypeSafe API key works and answers a question
 	@$(RUN) checks.py typesafe
