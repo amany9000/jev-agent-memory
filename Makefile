@@ -1,9 +1,10 @@
 .DEFAULT_GOAL := help
 RUN := uv run --no-sync python
+PYTEST := uv run --no-sync pytest
 Q ?= Who leads Acme Robotics' Berlin office, and what do they use?
 
 .PHONY: help install env \
-        check check-env check-neo4j check-memory check-typesafe check-extractor check-deepseek \
+        test test-offline test-typesafe \
         fix-vector-indexes \
         ingest ask demo graph clean
 
@@ -11,36 +12,28 @@ help: ## Show this help
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z0-9_-]+:.*## / {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 # --- setup -------------------------------------------------------------------
-install: ## Install dependencies into .venv (uv)
+install: ## Install dependencies (incl. dev/test deps) into .venv (uv)
 	uv sync
 
 env: ## Create .env from .env.example (never overwrites)
 	@if [ -f .env ]; then echo ".env already exists — edit it directly"; \
 	else cp .env.example .env && echo "Created .env — fill in NEO4J_* and TYPESAFE_API_KEY"; fi
 
-# --- checks ------------------------------------------------------------------
-check-env: ## Required settings are present in .env
-	@$(RUN) checks.py env
+# --- tests ---------------------------------------------------------------
+# Neo4j/DeepSeek tests skip cleanly (not fail) without credentials; TypeSafe
+# tests are excluded unless explicitly requested (see test-typesafe) — nothing
+# here spends TypeSafe credits by accident.
+test: ## Run the suite (offline logic + GLiNER + Neo4j/DeepSeek if configured). No TypeSafe calls.
+	$(PYTEST) -v
 
-check-neo4j: ## Aura reachable, credentials valid, user can write
-	@$(RUN) checks.py neo4j
+test-offline: ## Run only what needs no network at all (extractor logic + GLiNER + config)
+	$(PYTEST) -v tests/test_config.py tests/test_extractor.py
 
-check-memory: ## neo4j-agent-memory connects to Aura and round-trips a message (FastEmbed)
-	@$(RUN) checks.py memory
-
-check-deepseek: ## DeepSeek API key works (optional: agent chat model)
-	@$(RUN) checks.py deepseek
+test-typesafe: ## Run the ONE real TypeSafe API test (spends credits) — use sparingly
+	$(PYTEST) -v --run-typesafe tests/test_typesafe.py
 
 fix-vector-indexes: ## Drop Aura vector indexes sized for a different embedding model
-	@$(RUN) checks.py fix-vector-indexes
-
-check-typesafe: ## TypeSafe API key works and answers a question
-	@$(RUN) checks.py typesafe
-
-check-extractor: ## GLiNER + TypeSafe extract the expected entities from a sample (no Neo4j)
-	@$(RUN) checks.py extractor
-
-check: check-env check-neo4j check-typesafe check-extractor check-memory ## Run every check, in dependency order
+	$(RUN) utils.py fix-vector-indexes
 
 # --- run ---------------------------------------------------------------------
 ingest: ## Ingest data/docs into the memory graph via TypeSafe (DOCS=path to override)
@@ -49,11 +42,11 @@ ingest: ## Ingest data/docs into the memory graph via TypeSafe (DOCS=path to ove
 ask: ## Ask the memory-backed agent (Q="your question")
 	$(RUN) langchain_agent_memory.py ask "$(Q)"
 
-demo: ## Ingest data/docs, then ask one question
+demo: ## Ingest data/docs, then ask one question (calls TypeSafe once per passage)
 	$(RUN) langchain_agent_memory.py demo --question "$(Q)"
 
 graph: ## Show the entities and relationships TypeSafe has written
-	@$(RUN) checks.py graph
+	@$(RUN) utils.py graph
 
 clean: ## Remove caches (keeps .venv and .env)
 	find . -name __pycache__ -type d -prune -exec rm -rf {} +
