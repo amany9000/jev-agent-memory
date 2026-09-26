@@ -44,7 +44,7 @@ from typesafe_sdk import AsyncTypeSafeClient
 
 import _env
 from fastembed_embedder import FastEmbedProvider
-from typesafe_extractor import TypeSafeExtractor, gliner_candidate_extractor
+from typesafe_extractor import TypeSafeExtractor, gliner_candidate_extractor, typesafe_client
 
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
@@ -98,7 +98,7 @@ def build_extractor(typesafe: AsyncTypeSafeClient) -> TypeSafeExtractor:
 async def open_memory() -> AsyncIterator[tuple[MemoryClient[Any, Any, Any], TypeSafeExtractor]]:
     """A connected ``MemoryClient`` whose extraction runs through TypeSafe."""
     _env.require("TYPESAFE_API_KEY")
-    async with AsyncTypeSafeClient() as typesafe:
+    async with typesafe_client() as typesafe:
         extractor = build_extractor(typesafe)
         async with MemoryClient(build_settings(), extractor=extractor) as client:
             yield client, extractor

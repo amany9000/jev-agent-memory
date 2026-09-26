@@ -30,7 +30,7 @@ from neo4j_agent_memory.extraction import (
     ExtractionResult,
     ExtractorBuilder,
 )
-from typesafe_sdk import AsyncTypeSafeClient, Choice, ChoiceAnswer
+from typesafe_sdk import AsyncTypeSafeClient, Choice, ChoiceAnswer, RetryPolicy
 
 NONE = "NONE"
 
@@ -61,6 +61,20 @@ RELATION_TYPES: dict[str, str] = {
 SYMMETRIC_RELATIONS = frozenset({"KNOWS"})
 
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+|\n+")
+
+
+def typesafe_client() -> AsyncTypeSafeClient:
+    """A TypeSafe client that is patient with 429s.
+
+    The SDK default is 2 retries with waits of at most 5s. Behind the Vercel AI
+    Gateway the upstream provider intermittently answers 429 "high demand", so
+    retry harder: up to 8 retries, backing off to 20s (and honoring `retry-after`).
+    Configuration (key, base URL, model) still comes from the TYPESAFE_* env vars.
+    """
+    return AsyncTypeSafeClient(
+        retry=RetryPolicy(max_retries=8, backoff_initial=1.0, backoff_max=20.0),
+        timeout=60.0,
+    )
 
 
 def gliner_candidate_extractor(
@@ -307,4 +321,5 @@ __all__ = [
     "RELATION_TYPES",
     "TypeSafeExtractor",
     "gliner_candidate_extractor",
+    "typesafe_client",
 ]

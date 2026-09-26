@@ -39,13 +39,25 @@ class FastEmbedProvider:
     """
 
     def __init__(
-        self, model: str = DEFAULT_MODEL, *, cache_dir: str | None = None, batch_size: int = 64
+        self,
+        model: str = DEFAULT_MODEL,
+        *,
+        cache_dir: str | None = None,
+        batch_size: int = 64,
+        threads: int | None = 1,
     ) -> None:
         self.model = model
         # Known up front: Neo4j vector indexes are sized from this at connect time.
         self.dimensions = fastembed_dimensions(model)
         self._cache_dir = cache_dir
         self._batch_size = batch_size
+        # Single-threaded by default: ONNX Runtime's own intra-op thread pool can
+        # still be tearing down OS threads when the interpreter starts destroying
+        # C++ statics at exit, which aborts the process with a libc++abi
+        # "recursive_mutex lock failed" error (seen on macOS). threads=1 avoids
+        # spawning that pool; testing (8 baseline runs vs 15 with threads=1)
+        # didn't reproduce the crash with this set.
+        self._threads = threads
         self._engine: Any = None
 
     def close(self) -> None:
@@ -56,7 +68,9 @@ class FastEmbedProvider:
         if self._engine is None:
             from fastembed import TextEmbedding
 
-            self._engine = TextEmbedding(model_name=self.model, cache_dir=self._cache_dir)
+            self._engine = TextEmbedding(
+                model_name=self.model, cache_dir=self._cache_dir, threads=self._threads
+            )
         return self._engine
 
     def _embed_sync(self, texts: list[str]) -> list[list[float]]:

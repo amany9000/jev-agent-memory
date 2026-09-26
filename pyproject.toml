@@ -16,6 +16,24 @@ dependencies = [
     "python-dotenv>=1.0",
 ]
 
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+# `markers` are also registered dynamically in tests/conftest.py::pytest_configure
+# (with descriptions); listed here too so `pytest --markers` is discoverable
+# without needing --strict-markers to fail on a typo.
+markers = [
+    "neo4j: needs a live Neo4j Aura connection",
+    "deepseek: needs DEEPSEEK_API_KEY",
+    "typesafe: makes a real, billed TypeSafe API call — opt in with --run-typesafe",
+]
+
 [tool.uv]
 # Scripts, not an installable package.
 package = false
