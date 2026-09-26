@@ -16,16 +16,7 @@ text ──► GLiNER (local, low threshold)  ──► candidate spans         
 `extract_entities=True` goes through TypeSafe. That covers ingested documents, and it also
 covers the chat turns that `Neo4jMemoryMiddleware` persists while the agent runs.
 
-## Files
-
-| File | What it is |
-|---|---|
-| `typesafe_extractor.py` | The extractor: GLiNER candidates → TypeSafe typing + relations. No Neo4j or LangChain code. |
-| `langchain_agent_memory.py` | Memory wiring (Aura + TypeSafe extractor), document ingestion, and the LangChain agent. |
-| `checks.py` | Health checks behind the `make check-*` targets. |
-| `fastembed_embedder.py` | FastEmbed adapter for the memory library's `EmbeddingProvider` protocol. |
-| `_env.py` | Loads `.env`. |
-| `data/docs/` | Sample documents for `make ingest`. |
+See [docs.md](docs.md) for what each file does and how to tune the extractor.
 
 ## Prerequisites
 
@@ -48,13 +39,9 @@ make env                # creates .env from .env.example
 #    edit .env: NEO4J_URI / NEO4J_USERNAME / NEO4J_PASSWORD / NEO4J_DATABASE
 #               from the Aura credentials file, TYPESAFE_API_KEY, and optionally DEEPSEEK_API_KEY
 
-# 3. Verify each piece (run individually, or all at once with `make check`)
-make check-env          # required values present
-make check-neo4j        # Aura reachable, credentials valid, can write
-make check-typesafe     # API key valid, one question answered
-make check-extractor    # GLiNER + TypeSafe find the expected entities (no Neo4j)
-make check-memory       # neo4j-agent-memory connects to Aura, round-trips a message (FastEmbed)
-make check-deepseek     # optional: DeepSeek key works
+# 3. Test each piece — see "Testing" below for what runs and what it costs
+make test               # everything except the real TypeSafe call: free, safe to run often
+make test-typesafe      # the one test that spends TypeSafe credits — run deliberately
 
 # 4. Build the graph and talk to it
 make ingest             # data/docs → TypeSafe → Aura
@@ -66,18 +53,43 @@ make demo               # ingest + one question in a single run
 `make help` lists every target. To ingest your own files, run `make ingest DOCS="path/to/dir_or_file.md"`.
 `.md` and `.txt` files are split into passages on blank lines, and lines starting with `#` are skipped.
 
-## What each check proves
+## Testing
 
-| Target | Passes when | Typical failures |
+The suite is pytest, under `tests/`. It's split so that iterating on the extractor's
+logic — the part you're most likely to change — never touches a paid API, and the
+one test that does is never run by accident.
+
+| Command | Runs | Cost |
 |---|---|---|
-| `check-env` | `NEO4J_URI`, `NEO4J_PASSWORD`, `TYPESAFE_API_KEY` are set (`DEEPSEEK_API_KEY` reported as optional) | `.env` missing → `make env` |
-| `check-neo4j` | Driver connects, authenticates, reads server version, **creates and deletes a test node**, and counts nodes | Wrong password (`AuthError`); paused free instance or wrong URI (`ServiceUnavailable`); `bolt://` or `neo4j://` instead of `neo4j+s://`; wrong `NEO4J_DATABASE` |
-| `check-typesafe` | Lists your models and classifies "Berlin" as `LOCATION` | Bad or missing API key |
-| `check-extractor` | GLiNER finds candidates in a sample sentence, and TypeSafe types Maria Chen / Acme Robotics / Berlin correctly. Relations are reported but don't fail the check. | GLiNER model download failed; TypeSafe errors |
-| `check-memory` | `MemoryClient` connects, creates its schema and 384-dim vector indexes, stores a message with a FastEmbed embedding, reads it back, and cleans up | Vector indexes sized for another model → `make fix-vector-indexes`; Aura permissions |
-| `check-deepseek` | DeepSeek answers a one-word prompt | Bad `DEEPSEEK_API_KEY` or no balance |
+| `make test-offline` | `tests/test_config.py`, `tests/test_extractor.py` | Free. Local only (GLiNER runs, but no network). |
+| `make test` | Everything **except** `tests/test_typesafe.py` | Free. Neo4j/DeepSeek tests **skip** (not fail) if their credentials aren't set. |
+| `make test-typesafe` | The one test in `tests/test_typesafe.py` | **Spends TypeSafe credits.** One `system_one` call, one question. |
 
-`check-neo4j` uses the raw driver and `check-memory` uses the memory library. When one passes and the other fails, that tells you which layer is broken.
+`pytest` on its own behaves like `make test`: `tests/test_typesafe.py` is marked
+`@pytest.mark.typesafe`, and `tests/conftest.py` skips every test with that marker
+unless you pass `--run-typesafe` — so nothing in a normal test run, an IDE's "run
+all tests", or CI calls TypeSafe. `make test-typesafe` is the only path that does.
+
+| File | What it covers | Needs |
+|---|---|---|
+| `test_config.py` | `.env` names exist; `EMBEDDING_MODEL` resolves to a real FastEmbed model | nothing |
+| `test_extractor.py` | `TypeSafeExtractor`'s own logic — dedup, batching, direction, confidence filtering, symmetric-relation dedup — against `FakeTypeSafeClient`, a stub that answers from a lookup table. Also runs real GLiNER (local, free) to confirm it finds the sample entities. | nothing (GLiNER model download on first run) |
+| `test_neo4j.py` | Aura connects, authenticates, can write, reports a version | `NEO4J_URI` / `NEO4J_PASSWORD` — **skips** without them |
+| `test_memory.py` | `MemoryClient` + FastEmbed round-trip a message on Aura | same as above |
+| `test_deepseek.py` | One short `ChatDeepSeek` call | `DEEPSEEK_API_KEY` — **skips** without it |
+| `test_typesafe.py` | One real `system_one` call classifies "Berlin" as `LOCATION` | `TYPESAFE_API_KEY`, and `--run-typesafe` |
+
+If `test_memory.py` fails with a dimension mismatch, run `make fix-vector-indexes`
+(see below) and retry — that's a leftover index from a previous embedding model, not
+a code problem.
+
+To debug one layer in isolation: `uv run pytest tests/test_neo4j.py -v` (raw driver)
+vs `tests/test_memory.py -v` (through the memory library) tells you which layer broke
+if one passes and the other doesn't.
+
+Extending the extractor's logic? Add a case to `test_extractor.py` against
+`FakeTypeSafeClient` — it's free and instant. Reserve `test_typesafe.py` for
+confirming the real API contract hasn't changed, not for logic you can test offline.
 
 ## Viewing the graph in Aura
 
@@ -91,19 +103,5 @@ MATCH p = (:Entity)-[:RELATED_TO]->(:Entity) RETURN p;
 MATCH p = (:Message)-[:MENTIONS]->(:Entity) RETURN p LIMIT 100;
 ```
 
-## Tuning
-
-These are constructor arguments of `TypeSafeExtractor` (set them in `build_extractor`) or `.env` values:
-
-| Setting | Default | Effect |
-|---|---|---|
-| `GLINER_THRESHOLD` | `0.3` | Lower gives more candidates for TypeSafe to judge. Higher gives fewer TypeSafe questions. |
-| `min_entity_confidence` | `0.5` | TypeSafe choice confidence needed to keep an entity |
-| `min_relation_confidence` | `0.6` | Same, for relations |
-| `max_questions_per_call` | `25` | Questions batched into one `system_one` request |
-| `max_pairs` | `40` | Cap on relation questions per passage |
-| `entity_labels` / `relation_labels` | POLE+O / 8 relation types | Your own taxonomy. Both must keep a `NONE` label. |
-
-**Cost model:** each passage costs one question per candidate entity, plus two per pair of
-entities that share a sentence (both directions). Questions are batched, so a typical
-passage takes 1–3 API calls.
+See [docs.md](docs.md) for tuning `TypeSafeExtractor` (thresholds, batching, your own
+entity/relation taxonomy) and the per-passage cost model.
