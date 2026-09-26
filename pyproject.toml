@@ -1,0 +1,23 @@
+[project]
+name = "typesafe-agent-memory-poc"
+version = "0.1.0"
+description = "POC: TypeSafe as the graph maker for neo4j-agent-memory, driving a LangChain agent on Neo4j Aura"
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    # Memory graph + LangChain 1.x middleware, GLiNER candidates, and embeddings:
+    # OpenAI (default) or local sentence-transformers.
+    "neo4j-agent-memory[langchain-agents,gliner,openai,sentence-transformers]>=0.6.0,<0.7",
+    # TypeSafe: types candidate entities and relations.
+    "typesafe-sdk>=0.7.1",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+# A real chat model for the agent (set OPENAI_API_KEY). Without it the agent runs
+# on a scripted fake model and the memory/extraction path still runs end to end.
+openai = ["langchain-openai>=1.0"]
+
+[tool.uv]
+# Scripts, not an installable package.
+package = false
