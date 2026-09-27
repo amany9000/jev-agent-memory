@@ -1,19 +1,8 @@
 """TypeSafe-powered entity and relation extractor for neo4j-agent-memory.
 
-Two stages, each doing what it is good at:
-
-    1. Candidate spans (recall)    — GLiNER, via the library's ``ExtractorBuilder``.
-                                     Run at a low threshold so little is missed.
-    2. Typing + relations (precision) — TypeSafe ``system_one`` ``Choice`` questions:
-                                     "what POLE+O type is this mention?" (or NONE = noise)
-                                     and "what relationship does the text state from A to B?"
-
-``TypeSafeExtractor`` implements the library's ``EntityExtractor`` protocol, so it
-plugs straight into ``MemoryClient(settings, extractor=...)``. From then on every
-``short_term.add_message(..., extract_entities=True)`` — including the messages the
-LangChain ``Neo4jMemoryMiddleware`` persists — builds the graph through TypeSafe:
-memory writes the ``:Entity`` nodes, links them to the message, and stores the
-relations by entity name.
+Two stages: GLiNER finds candidate spans (recall), then TypeSafe ``system_one``
+types each one and relates pairs (precision). Implements ``EntityExtractor``,
+so it plugs into ``MemoryClient(settings, extractor=...)``.
 """
 
 from __future__ import annotations
@@ -64,13 +53,7 @@ _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+|\n+")
 
 
 def typesafe_client() -> AsyncTypeSafeClient:
-    """A TypeSafe client that is patient with 429s.
-
-    The SDK default is 2 retries with waits of at most 5s. Behind the Vercel AI
-    Gateway the upstream provider intermittently answers 429 "high demand", so
-    retry harder: up to 8 retries, backing off to 20s (and honoring `retry-after`).
-    Configuration (key, base URL, model) still comes from the TYPESAFE_* env vars.
-    """
+    """TypeSafe client with more retries, for gateways that 429 under load."""
     return AsyncTypeSafeClient(
         retry=RetryPolicy(max_retries=8, backoff_initial=1.0, backoff_max=20.0),
         timeout=60.0,

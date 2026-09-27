@@ -5,7 +5,7 @@ Q ?= Who leads Acme Robotics' Berlin office, and what do they use?
 
 .PHONY: help install env \
         test test-offline test-typesafe \
-        fix-vector-indexes \
+        fix-vector-indexes wipe-test-data wipe-entities \
         ingest ask demo graph clean
 
 help: ## Show this help
@@ -35,17 +35,26 @@ test-typesafe: ## Run the ONE real TypeSafe API test (spends credits) — use sp
 fix-vector-indexes: ## Drop Aura vector indexes sized for a different embedding model
 	$(RUN) utils.py fix-vector-indexes
 
+# Debug/exploration data pollutes the same graph as the demo data (see utils.py's
+# module docstring — Aura Free has no per-run database to isolate into). Use a
+# session id prefixed "debug-" in ad hoc scripts, then:
+wipe-test-data: ## Delete debug-prefixed conversations/messages (entities untouched — see utils.py)
+	$(RUN) utils.py wipe-test-data
+
+wipe-entities: ## Delete specific entities by exact name (NAMES="Name One,Name Two")
+	$(RUN) utils.py wipe-entities "$(NAMES)"
+
 # --- run ---------------------------------------------------------------------
-ingest: ## Ingest data/docs into the memory graph via TypeSafe (DOCS=path to override)
+ingest: ## Ingest data/docs into the memory graph (spaCy + GLiNER; DOCS=path to override)
 	$(RUN) langchain_agent_memory.py ingest $(DOCS)
 
 ask: ## Ask the memory-backed agent (Q="your question")
 	$(RUN) langchain_agent_memory.py ask "$(Q)"
 
-demo: ## Ingest data/docs, then ask one question (calls TypeSafe once per passage)
+demo: ## Ingest data/docs, then ask one question
 	$(RUN) langchain_agent_memory.py demo --question "$(Q)"
 
-graph: ## Show the entities and relationships TypeSafe has written
+graph: ## Show the entities and relationships written to Aura
 	@$(RUN) utils.py graph
 
 clean: ## Remove caches (keeps .venv and .env)

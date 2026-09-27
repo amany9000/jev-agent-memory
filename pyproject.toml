@@ -5,13 +5,20 @@ description = "POC: TypeSafe as the graph maker for neo4j-agent-memory, driving 
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
 dependencies = [
-    # Memory graph + LangChain 1.x middleware, GLiNER candidates.
-    "neo4j-agent-memory[langchain-agents,gliner]>=0.6.0,<0.7",
+    # Memory graph + LangChain 1.x middleware. spaCy + GLiNER are the extraction
+    # pipeline (see build_settings() in langchain_agent_memory.py).
+    "neo4j-agent-memory[langchain-agents,spacy,gliner]>=0.6.0,<0.7",
+    # spaCy's transformer-based English model (better NER accuracy than en_core_web_sm),
+    # as a direct wheel — `spacy download` isn't a dependency uv can resolve, so this
+    # pins the model to a version compatible with the spacy release above. ~440MB.
+    "en-core-web-trf @ https://github.com/explosion/spacy-models/releases/download/en_core_web_trf-3.8.0/en_core_web_trf-3.8.0-py3-none-any.whl",
+    "spacy-transformers>=1.4",
     # Local ONNX embeddings (see fastembed_embedder.py).
     "fastembed>=0.8",
     # DeepSeek chat model for the agent.
     "langchain-deepseek>=1.1",
-    # TypeSafe: types candidate entities and relations.
+    # TypeSafe: used by tests/test_typesafe.py and typesafe_extractor.py (an
+    # alternative extractor, not the one build_settings() wires up by default).
     "typesafe-sdk>=0.7.1",
     "python-dotenv>=1.0",
 ]

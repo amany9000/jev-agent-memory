@@ -1,13 +1,5 @@
-"""FastEmbed embeddings for neo4j-agent-memory.
-
-neo4j-agent-memory ships OpenAI / sentence-transformers / Vertex / Bedrock
-adapters but none for FastEmbed, so this implements its ``EmbeddingProvider``
-protocol (``model``, ``dimensions``, async ``embed`` + ``embed_one``) and is
-passed as ``BoltSettings(embedding=FastEmbedProvider(...))``.
-
-FastEmbed runs ONNX models locally — no API key, no torch at inference time.
-The model downloads on first use (~70 MB for the default).
-"""
+"""FastEmbed EmbeddingProvider for neo4j-agent-memory (no built-in adapter for it).
+Local ONNX, no API key. Model downloads on first use (~70 MB for the default)."""
 
 from __future__ import annotations
 
@@ -32,11 +24,8 @@ def fastembed_dimensions(model: str) -> int:
 
 
 class FastEmbedProvider:
-    """``EmbeddingProvider`` backed by ``fastembed.TextEmbedding``.
-
-    The model loads lazily on the first ``embed`` call, and inference runs in a
-    worker thread so it does not block the event loop.
-    """
+    """``EmbeddingProvider`` backed by ``fastembed.TextEmbedding``. Lazy-loaded,
+    runs in a worker thread."""
 
     def __init__(
         self,
@@ -47,16 +36,10 @@ class FastEmbedProvider:
         threads: int | None = 1,
     ) -> None:
         self.model = model
-        # Known up front: Neo4j vector indexes are sized from this at connect time.
         self.dimensions = fastembed_dimensions(model)
         self._cache_dir = cache_dir
         self._batch_size = batch_size
-        # Single-threaded by default: ONNX Runtime's own intra-op thread pool can
-        # still be tearing down OS threads when the interpreter starts destroying
-        # C++ statics at exit, which aborts the process with a libc++abi
-        # "recursive_mutex lock failed" error (seen on macOS). threads=1 avoids
-        # spawning that pool; testing (8 baseline runs vs 15 with threads=1)
-        # didn't reproduce the crash with this set.
+        # threads=1: avoids a libc++abi shutdown crash from ONNX Runtime's thread pool.
         self._threads = threads
         self._engine: Any = None
 

@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
-"""LangChain 1.x agent whose Neo4j memory graph is built by TypeSafe.
+"""LangChain 1.x agent with a Neo4j memory graph.
 
-    ingest  — split documents into passages and store each one in memory.
-              ``MemoryClient`` was handed a ``TypeSafeExtractor``, so every stored
-              passage becomes (:Entity) nodes + relationships in Neo4j Aura.
-    ask     — run the agent. ``Neo4jMemoryMiddleware`` injects memory into the
-              prompt and persists both turns, and those turns go through the same
-              TypeSafe extractor, so the conversation keeps growing the graph.
-    demo    — ingest ``data/docs`` then ask one question.
+    ingest  — split documents into passages and store each in memory.
+    ask     — run the agent; both turns are stored the same way.
+    demo    — ingest data/docs then ask one question.
+
+Extractor: USE_SPACY=true (default) uses the standard spaCy+GLiNER pipeline;
+USE_SPACY=false uses TypeSafeExtractor. See docs.md.
 
 Usage:
     uv run python langchain_agent_memory.py demo
@@ -40,7 +39,6 @@ from neo4j_agent_memory.integrations.langchain import (
     Neo4jMemoryRetriever,
 )
 from pydantic import SecretStr
-from typesafe_sdk import AsyncTypeSafeClient
 
 import _env
 from fastembed_embedder import FastEmbedProvider
@@ -48,7 +46,7 @@ from typesafe_extractor import TypeSafeExtractor, gliner_candidate_extractor, ty
 
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
-    from neo4j_agent_memory.extraction import ExtractionResult
+    from typesafe_sdk import AsyncTypeSafeClient
 
 DOCS_DIR = _env.ROOT / "data" / "docs"
 SYSTEM_PROMPT = (
@@ -58,11 +56,11 @@ SYSTEM_PROMPT = (
 
 
 # =====================================================================
-# Memory: Neo4j Aura + TypeSafe as the graph maker
+# Memory
 # =====================================================================
 def build_settings() -> BoltSettings:
-    """Bolt settings for Aura. The library's own extraction is switched off —
-    ``TypeSafeExtractor`` replaces it via ``MemoryClient(extractor=...)``."""
+    """Bolt settings for Aura. Extraction config only matters when USE_SPACY is
+    true; otherwise open_memory() overrides it with TypeSafeExtractor."""
     _env.require("NEO4J_URI", "NEO4J_PASSWORD")
     return BoltSettings(
         neo4j=Neo4jConfig(
@@ -75,14 +73,18 @@ def build_settings() -> BoltSettings:
         embedding=FastEmbedProvider(_env.EMBEDDING_MODEL),
         extraction=ExtractionConfig(
             extractor_type=ExtractorType.PIPELINE,
-            enable_spacy=False,
-            enable_gliner=False,
+            enable_spacy=_env.USE_SPACY,
+            enable_gliner=True,
             enable_llm_fallback=False,
+            spacy_model=_env.SPACY_MODEL,
+            gliner_model=_env.GLINER_MODEL,
+            gliner_threshold=_env.GLINER_THRESHOLD,
+            gliner_device=_env.GLINER_DEVICE,
         ),
     )
 
 
-def build_extractor(typesafe: AsyncTypeSafeClient) -> TypeSafeExtractor:
+def build_typesafe_extractor(typesafe: AsyncTypeSafeClient) -> TypeSafeExtractor:
     return TypeSafeExtractor(
         typesafe,
         candidate_extractor=gliner_candidate_extractor(
@@ -95,34 +97,44 @@ def build_extractor(typesafe: AsyncTypeSafeClient) -> TypeSafeExtractor:
 
 
 @asynccontextmanager
-async def open_memory() -> AsyncIterator[tuple[MemoryClient[Any, Any, Any], TypeSafeExtractor]]:
-    """A connected ``MemoryClient`` whose extraction runs through TypeSafe."""
+async def open_memory() -> AsyncIterator[MemoryClient[Any, Any, Any]]:
+    """A connected ``MemoryClient``: spaCy+GLiNER, or TypeSafeExtractor if USE_SPACY=false."""
+    if _env.USE_SPACY:
+        async with MemoryClient(build_settings()) as client:
+            yield client
+        return
+
     _env.require("TYPESAFE_API_KEY")
     async with typesafe_client() as typesafe:
-        extractor = build_extractor(typesafe)
-        async with MemoryClient(build_settings(), extractor=extractor) as client:
-            yield client, extractor
+        async with MemoryClient(build_settings(), extractor=build_typesafe_extractor(typesafe)) as client:
+            yield client
 
 
-def print_extraction(result: ExtractionResult | None, indent: str = "   ") -> None:
-    if result is None or not result.entities:
+async def entities_mentioned_by(client: MemoryClient[Any, Any, Any], message_id: Any) -> list[dict[str, Any]]:
+    """Entities linked to ``message_id`` via MENTIONS (raw Cypher: no typed getter for this)."""
+    return await client.query.cypher(
+        "MATCH (m:Message {id: $message_id})-[:MENTIONS]->(e:Entity) "
+        "RETURN e.name AS name, e.type AS type, e.confidence AS confidence",
+        {"message_id": str(message_id)},
+    )
+
+
+def print_entities(entities: list[dict[str, Any]], indent: str = "   ") -> None:
+    if not entities:
         print(f"{indent}(no entities)")
         return
-    for entity in result.entities:
-        print(f"{indent}{entity.type:<13} {entity.name}  ({entity.confidence:.2f})")
-    for relation in result.relations:
-        print(
-            f"{indent}  {relation.source} -[{relation.relation_type}]-> {relation.target}"
-            f"  ({relation.confidence:.2f})"
-        )
+    for row in entities:
+        confidence = row.get("confidence")
+        suffix = f"  ({confidence:.2f})" if confidence is not None else ""
+        print(f"{indent}{row['type']:<13} {row['name']}{suffix}")
+    print(f"{indent}(relationships aren't per-message — run `make graph` to see them)")
 
 
 # =====================================================================
 # Ingestion
 # =====================================================================
 def load_passages(paths: list[Path]) -> list[tuple[str, str]]:
-    """(source, passage) pairs. Blank lines split passages; small passages keep
-    TypeSafe's per-call question count (and pairwise relation checks) down."""
+    """(source, passage) pairs, split on blank lines."""
     files: list[Path] = []
     for path in paths:
         files.extend(sorted(path.glob("*.md")) + sorted(path.glob("*.txt")) if path.is_dir() else [path])
@@ -135,25 +147,22 @@ def load_passages(paths: list[Path]) -> list[tuple[str, str]]:
     return passages
 
 
-async def ingest(
-    client: MemoryClient[Any, Any, Any], extractor: TypeSafeExtractor, paths: list[Path]
-) -> None:
+async def ingest(client: MemoryClient[Any, Any, Any], paths: list[Path]) -> None:
     passages = load_passages(paths)
     if not passages:
         raise SystemExit(f"No passages found in: {', '.join(map(str, paths))}")
     print(f"Ingesting {len(passages)} passages into session {_env.INGEST_SESSION_ID!r}")
     for n, (source, passage) in enumerate(passages, 1):
-        # `extract_entities=True` hands the passage to TypeSafeExtractor; memory
-        # then writes the entities, MENTIONS links and relationships to Neo4j.
-        await client.short_term.add_message(
+        message = await client.short_term.add_message(
             _env.INGEST_SESSION_ID,
             "user",
             passage,
             extract_entities=True,
             metadata={"source": source, "kind": "document"},
         )
+        entities = await entities_mentioned_by(client, message.id)
         print(f"\n[{n}/{len(passages)}] {source}: {passage[:70]}...")
-        print_extraction(extractor.last_result)
+        print_entities(entities)
 
 
 # =====================================================================
@@ -197,9 +206,7 @@ def build_tools(client: MemoryClient[Any, Any, Any]) -> list[BaseTool]:
     return [search_memory, save_preference]
 
 
-async def ask(
-    client: MemoryClient[Any, Any, Any], extractor: TypeSafeExtractor, question: str
-) -> str:
+async def ask(client: MemoryClient[Any, Any, Any], question: str) -> str:
     model, supports_tools = build_model()
     agent = create_agent(
         model,
@@ -211,16 +218,19 @@ async def ask(
                 session_id=_env.CHAT_SESSION_ID,
                 include_reasoning=False,
                 max_items=8,
-                extract_entities=True,  # chat turns also go through TypeSafe
+                extract_entities=True,
             )
         ],
     )
-    # `ainvoke`, not `invoke`: the memory middleware only implements async hooks.
     result = await agent.ainvoke({"messages": [HumanMessage(content=question)]})
     answer = result["messages"][-1].text
     print(f"\nUser:      {question}\nAssistant: {answer}")
-    print("\nTypeSafe extraction from the last stored turn:")
-    print_extraction(extractor.last_result)
+
+    conversation = await client.short_term.get_conversation(_env.CHAT_SESSION_ID)
+    user_messages = [m for m in conversation.messages if m.role.value == "user"]
+    print("\nEntities linked to your message:")
+    entities = await entities_mentioned_by(client, user_messages[-1].id) if user_messages else []
+    print_entities(entities)
     return answer
 
 
@@ -238,13 +248,13 @@ async def main() -> None:
     p_demo.add_argument("--question", default="Who leads Acme Robotics' Berlin office, and what do they use?")
     args = parser.parse_args()
 
-    async with open_memory() as (client, extractor):
+    async with open_memory() as client:
         if args.command in ("ingest", "demo"):
-            await ingest(client, extractor, args.paths if args.command == "ingest" else [DOCS_DIR])
+            await ingest(client, args.paths if args.command == "ingest" else [DOCS_DIR])
         if args.command == "ask":
-            await ask(client, extractor, args.question)
+            await ask(client, args.question)
         if args.command == "demo":
-            await ask(client, extractor, args.question)
+            await ask(client, args.question)
 
 
 if __name__ == "__main__":

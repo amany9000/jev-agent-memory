@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import pytest
 
-SESSION_ID = "typesafe-poc-pytest"
+# "debug-" prefix: the convention any ad hoc/test session id follows so
+# `make wipe-test-data` can find and delete it (see utils.py). Belt and braces
+# here — this test also cleans up after itself via clear_session below.
+SESSION_ID = "debug-pytest-memory"
 
 pytestmark = pytest.mark.neo4j
 

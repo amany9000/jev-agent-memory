@@ -26,7 +26,7 @@ See [docs.md](docs.md) for what each file does and how to tune the extractor.
 - Optional: a **DeepSeek API key** ([platform.deepseek.com](https://platform.deepseek.com)) for the agent's chat model.
   Without it the agent runs on a scripted fake model.
 - Embeddings need no key. They come from **FastEmbed** (`BAAI/bge-small-en-v1.5`, 384 dims), which runs locally and downloads ~70 MB on first use.
-- About 2 GB of disk for torch and GLiNER (~800 MB). GLiNER downloads on first use.
+- About 3 GB of disk: torch, GLiNER (~800 MB), and spaCy's `en_core_web_trf` (~440 MB). Both download on first use.
 
 ## Run it
 
